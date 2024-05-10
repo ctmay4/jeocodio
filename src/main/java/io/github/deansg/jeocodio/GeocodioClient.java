@@ -151,16 +151,14 @@ public class GeocodioClient {
     private <T> CompletableFuture<T> sendAsync(HttpRequest httpRequest, Class<T> clazz) {
         return httpClient.sendAsync(httpRequest, HttpResponse.BodyHandlers.ofInputStream())
                 .thenApply(resp -> {
-                    try {
-                        InputStream responseBodyStream = resp.body();
-                        if ("gzip".equals(resp.headers().firstValue("Content-Encoding").orElse(""))) {
-                            responseBodyStream = new GZIPInputStream(responseBodyStream);
-                        }
-                        String json = new String(responseBodyStream.readAllBytes(), StandardCharsets.UTF_8);
+                    try (InputStream rawStream = resp.body();
+                         InputStream stream = "gzip".equals(resp.headers().firstValue("Content-Encoding").orElse(""))
+                                 ? new GZIPInputStream(rawStream)
+                                 : rawStream) {
+                        String json = new String(stream.readAllBytes(), StandardCharsets.UTF_8);
 
-                        if (resp.statusCode() != 200) {
+                        if (resp.statusCode() != 200)
                             throw new GeocodioStatusCodeException(resp.statusCode(), json);
-                        }
 
                         return gson.fromJson(json, clazz);
                     }
