@@ -1,21 +1,35 @@
 package io.github.deansg.jeocodio;
 
-import com.google.gson.FieldNamingPolicy;
-import com.google.gson.Gson;
-import com.google.gson.GsonBuilder;
-import io.github.deansg.jeocodio.models.*;
-
+import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
-import java.util.*;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
+import java.util.zip.GZIPInputStream;
+
+import com.google.gson.FieldNamingPolicy;
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+
+import io.github.deansg.jeocodio.models.BatchGeocodingRequest;
+import io.github.deansg.jeocodio.models.BatchGeocodingResponse;
+import io.github.deansg.jeocodio.models.GeocodingRequest;
+import io.github.deansg.jeocodio.models.GeocodingRequestBuilder;
+import io.github.deansg.jeocodio.models.GeocodingResponse;
+import io.github.deansg.jeocodio.models.ReverseGeocodingRequest;
+import io.github.deansg.jeocodio.models.ReverseGeocodingResponse;
 
 public class GeocodioClient {
+
     private static final String DEFAULT_BASE_URL = "https://api.geocod.io/v1.7/";
     private final HttpClient httpClient;
     private final String apiKey;
@@ -81,6 +95,7 @@ public class GeocodioClient {
         query.put("postal_code", request.postalCode());
         var uri = buildURI("geocode", query);
         var httpRequest = HttpRequest.newBuilder()
+                .header("Accept-Encoding", "gzip")
                 .GET()
                 .uri(uri)
                 .build();
@@ -98,6 +113,7 @@ public class GeocodioClient {
         query.put("limit", Optional.ofNullable(request.limit()).map(Object::toString).orElse(null));
         var uri = buildURI("geocode", query);
         var httpRequest = HttpRequest.newBuilder()
+                .header("Accept-Encoding", "gzip")
                 .POST(HttpRequest.BodyPublishers.ofString(this.gson.toJson(request.qs())))
                 .header("Content-Type", "application/json")
                 .uri(uri)
@@ -118,6 +134,7 @@ public class GeocodioClient {
         query.put("format", request.format());
         var uri = buildURI("reverse", query);
         var httpRequest = HttpRequest.newBuilder()
+                .header("Accept-Encoding", "gzip")
                 .GET()
                 .uri(uri)
                 .build();
@@ -132,15 +149,25 @@ public class GeocodioClient {
     }
 
     private <T> CompletableFuture<T> sendAsync(HttpRequest httpRequest, Class<T> clazz) {
-        return httpClient.sendAsync(httpRequest, HttpResponse.BodyHandlers.ofString())
+        return httpClient.sendAsync(httpRequest, HttpResponse.BodyHandlers.ofInputStream())
                 .thenApply(resp -> {
-                    var body = resp.body();
-                    if (resp.statusCode() != 200) {
-                        throw new GeocodioStatusCodeException(resp.statusCode(), body);
+                    try {
+                        InputStream responseBodyStream = resp.body();
+                        if ("gzip".equals(resp.headers().firstValue("Content-Encoding").orElse(""))) {
+                            responseBodyStream = new GZIPInputStream(responseBodyStream);
+                        }
+                        String json = new String(responseBodyStream.readAllBytes(), StandardCharsets.UTF_8);
+
+                        if (resp.statusCode() != 200) {
+                            throw new GeocodioStatusCodeException(resp.statusCode(), json);
+                        }
+
+                        return gson.fromJson(json, clazz);
                     }
-                    return body;
-                })
-                .thenApply(str -> this.gson.fromJson(str, clazz));
+                    catch (IOException e) {
+                        throw new IllegalStateException("Error reading response", e);
+                    }
+                });
     }
 
     private URI buildURI(String endpoint, Map<String, String> query) {
